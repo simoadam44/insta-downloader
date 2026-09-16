@@ -7,7 +7,7 @@ type Store = {
   stats: { requests: number; success: number; fail: number; bytes: number };
   seo: Record<string, { title: string; description: string; faqs: string }>;
   ads: Record<string, { enabled: boolean; code: string }>;
-  api: { endpoint: string; proxies: string; rateLimit: string };
+  api: { endpoint: string; apiKey?: string; proxies: string; rateLimit: string };
 };
 
 const TABS = [
@@ -23,6 +23,8 @@ export default function AdminDashboard() {
   const [lang, setLang] = useState<Locale>('en');
   const [tool, setTool] = useState<string>(TOOLS[4]);
   const [msg, setMsg] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testOut, setTestOut] = useState<string | null>(null);
 
   useEffect(() => {
     fetch('/api/admin/config')
@@ -46,6 +48,29 @@ export default function AdminDashboard() {
   async function logout() {
     await fetch('/api/admin/login', { method: 'DELETE' });
     window.location.href = '/admin';
+  }
+
+  async function testExtractor() {
+    setTesting(true);
+    setTestOut(null);
+    try {
+      // Save first so the test uses the current endpoint/key.
+      await save({ api: store!.api });
+      const res = await fetch('/api/extract', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'https://www.instagram.com/p/DdM_3N1vjci/' })
+      });
+      const j = await res.json().catch(() => ({}));
+      const summary = j.items
+        ? `OK (${res.status}): ${j.items.length} item(s), type=${j.detectedType}, author=@${j.author}`
+        : `FAILED (${res.status}): ${j.error || 'unknown error'}`;
+      setTestOut(`${summary}\n\n${JSON.stringify(j, null, 2).slice(0, 2000)}`);
+    } catch (e: any) {
+      setTestOut(`Request failed: ${e.message}`);
+    } finally {
+      setTesting(false);
+    }
   }
 
   if (!store) return <p className="p-8 text-sm">Loading admin…</p>;
@@ -168,19 +193,26 @@ export default function AdminDashboard() {
         {tab === 'api' && (
           <div className="bg-white rounded-lg border p-4 space-y-3 text-xs">
             <p className="text-slate-500">
-              Instagram blocks direct server fetching. Point the app at your own free extractor
-              backend — easiest is a self-hosted Cobalt instance:{' '}
-              <code className="bg-slate-100 px-1 rounded">
-                docker run -d --name cobalt -p 9000:9000 --restart unless-stopped
-                ghcr.io/imputnet/cobalt:latest
-              </code>{' '}
-              then set the API endpoint below to{' '}
-              <code className="bg-slate-100 px-1 rounded">https://YOUR-INSTANCE/api/json</code>{' '}
-              (or set COBALT_API_URL env var in Vercel). Without this, downloads return an honest
-              error instead of fake media.
+              Instagram blocks direct server fetching, so the app needs an extractor backend.
+              Two free options: <strong>(A)</strong> a free RapidAPI Instagram-downloader key —
+              sign up at rapidapi.com, subscribe (free tier) to an Instagram downloader API,
+              paste its endpoint + key below; <strong>(B)</strong> your own Cobalt instance
+              (<code className="bg-slate-100 px-1 rounded">docker run -d --name cobalt -p 9000:9000 ghcr.io/imputnet/cobalt:latest</code>).
+              For production, mirror these as Vercel env vars{' '}
+              <code className="bg-slate-100 px-1 rounded">EXTRACTOR_API_URL</code> /{' '}
+              <code className="bg-slate-100 px-1 rounded">EXTRACTOR_API_KEY</code>.
             </p>
-            <label className="block font-semibold">Backend API Endpoint
-              <input value={store.api.endpoint} onChange={(e) => setStore({ ...store, api: { ...store.api, endpoint: e.target.value } })} placeholder="https://extractor.example.com/api" className="mt-1 w-full border rounded px-3 py-2 font-normal" />
+            <label className="block font-semibold">Backend API Endpoint (POST-first, GET ?url= fallback)
+              <input value={store.api.endpoint} onChange={(e) => setStore({ ...store, api: { ...store.api, endpoint: e.target.value } })} placeholder="https://xxx.p.rapidapi.com/... or https://YOUR-INSTANCE/api/json" className="mt-1 w-full border rounded px-3 py-2 font-normal" />
+            </label>
+            <label className="block font-semibold">API Key (sent as Bearer + x-rapidapi-key)
+              <input
+                type="password"
+                value={(store.api as { apiKey?: string }).apiKey || ''}
+                onChange={(e) => setStore({ ...store, api: { ...store.api, apiKey: e.target.value } as typeof store.api })}
+                placeholder="RapidAPI key or Cobalt API key (optional)"
+                className="mt-1 w-full border rounded px-3 py-2 font-normal font-mono"
+              />
             </label>
             <label className="block font-semibold">Rotating proxies (one per line)
               <textarea value={store.api.proxies} onChange={(e) => setStore({ ...store, api: { ...store.api, proxies: e.target.value } })} rows={3} className="mt-1 w-full border rounded px-3 py-2 font-normal font-mono" />
@@ -188,9 +220,19 @@ export default function AdminDashboard() {
             <label className="block font-semibold">Rate limit (req/min)
               <input value={store.api.rateLimit} onChange={(e) => setStore({ ...store, api: { ...store.api, rateLimit: e.target.value } })} className="mt-1 w-32 border rounded px-3 py-2 font-normal" />
             </label>
-            <button onClick={() => save({ api: store.api })} className="bg-fuchsia-600 text-white text-xs font-bold px-4 py-2 rounded">
-              Save API config
-            </button>
+            <div className="flex gap-2">
+              <button onClick={() => save({ api: store.api })} className="bg-fuchsia-600 text-white text-xs font-bold px-4 py-2 rounded">
+                Save API config
+              </button>
+              <button onClick={() => testExtractor()} className="bg-slate-800 text-white text-xs font-bold px-4 py-2 rounded">
+                {testing ? 'Testing…' : 'Test connection'}
+              </button>
+            </div>
+            {testOut && (
+              <pre className="bg-slate-900 text-green-300 text-[11px] p-3 rounded overflow-auto max-h-64 whitespace-pre-wrap">
+                {testOut}
+              </pre>
+            )}
           </div>
         )}
       </div>
