@@ -5,7 +5,7 @@ import { ClipboardPaste, X, Download, Loader2, BadgeCheck, PlayCircle } from 'lu
 import type { Locale, ToolSlug } from '@/lib/i18n';
 import { t, TOOL_KEYS } from '@/lib/i18n';
 import { TABS, toolPath } from './Header';
-import { detectType, extractMedia, isInstagramUrl, type ExtractResult } from '@/lib/instagram';
+import { extractMedia, isInstagramUrl, type ExtractResult } from '@/lib/instagram';
 
 export default function Downloader({ locale, activeTool }: { locale: Locale; activeTool: ToolSlug }) {
   const [url, setUrl] = useState('');
@@ -123,22 +123,33 @@ export default function Downloader({ locale, activeTool }: { locale: Locale; act
               <BadgeCheck size={14} className="text-green-600" />
               <span className="font-semibold text-slate-700">@{result.author}</span>
               <span className="ml-auto rounded bg-purple-100 text-purple-700 px-2 py-0.5 font-semibold">
-                {result.detectedType} • {detectType(url)}
+                {result.detectedType === 'video' ? 'video' : result.detectedType}
               </span>
             </div>
             {result.caption && <p className="text-xs text-slate-600 mt-1 line-clamp-2">{result.caption}</p>}
             <div className="grid sm:grid-cols-2 gap-3 mt-3">
               {result.items.map((m) => (
                 <article key={m.id} className="border border-slate-100 rounded-lg overflow-hidden">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={m.thumbnail}
-                    alt={result.caption?.slice(0, 80) || 'Instagram media preview'}
-                    loading="lazy"
-                    width={640}
-                    height={360}
-                    className="w-full aspect-video object-cover bg-slate-100"
-                  />
+                  {m.type === 'video' ? (
+                    <video
+                      src={m.url}
+                      poster={m.thumbnail}
+                      controls
+                      preload="metadata"
+                      playsInline
+                      className="w-full aspect-video bg-slate-900"
+                    />
+                  ) : (
+                    /* eslint-disable-next-line @next/next/no-img-element */
+                    <img
+                      src={m.thumbnail}
+                      alt={result.caption?.slice(0, 80) || 'Instagram media preview'}
+                      loading="lazy"
+                      width={640}
+                      height={360}
+                      className="w-full aspect-video object-cover bg-slate-100"
+                    />
+                  )}
                   <div className="flex items-center gap-2 p-2.5">
                     <span className="text-[11px] font-bold bg-slate-900 text-white px-2 py-0.5 rounded">
                       {m.quality}

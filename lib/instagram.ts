@@ -40,6 +40,33 @@ export function detectType(input: string): MediaType {
   return 'photo';
 }
 
+// Path segments that are route keywords, NOT usernames.
+const RESERVED = new Set([
+  'p', 'reel', 'reels', 'tv', 'stories', 's', 'share', 'explore',
+  'accounts', 'direct', 'about', 'developer', 'embed'
+]);
+
+// URL patterns like /p/<code>, /reel/<code>, /tv/<code> contain NO username —
+// the only non-reserved segment is the shortcode, which must NOT be shown as author.
+const NO_USER_BEFORE = new Set(['p', 'reel', 'reels', 'tv', 's', 'share']);
+
+/** Best-effort username from an Instagram URL, or null when the path has none. */
+export function extractAuthor(igUrl: string): string | null {
+  try {
+    const u = new URL(igUrl);
+    const segs = u.pathname.split('/').filter(Boolean);
+    for (let i = 0; i < segs.length; i++) {
+      const s = segs[i].toLowerCase();
+      if (RESERVED.has(s)) continue;
+      if (i > 0 && NO_USER_BEFORE.has(segs[i - 1].toLowerCase())) return null;
+      return segs[i];
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function extractMedia(url: string): Promise<ExtractResult> {
   const res = await fetch('/api/extract', {
     method: 'POST',

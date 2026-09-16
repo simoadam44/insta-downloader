@@ -167,6 +167,18 @@ export default function AdminDashboard() {
 
         {tab === 'api' && (
           <div className="bg-white rounded-lg border p-4 space-y-3 text-xs">
+            <p className="text-slate-500">
+              Instagram blocks direct server fetching. Point the app at your own free extractor
+              backend — easiest is a self-hosted Cobalt instance:{' '}
+              <code className="bg-slate-100 px-1 rounded">
+                docker run -d --name cobalt -p 9000:9000 --restart unless-stopped
+                ghcr.io/imputnet/cobalt:latest
+              </code>{' '}
+              then set the API endpoint below to{' '}
+              <code className="bg-slate-100 px-1 rounded">https://YOUR-INSTANCE/api/json</code>{' '}
+              (or set COBALT_API_URL env var in Vercel). Without this, downloads return an honest
+              error instead of fake media.
+            </p>
             <label className="block font-semibold">Backend API Endpoint
               <input value={store.api.endpoint} onChange={(e) => setStore({ ...store, api: { ...store.api, endpoint: e.target.value } })} placeholder="https://extractor.example.com/api" className="mt-1 w-full border rounded px-3 py-2 font-normal" />
             </label>
