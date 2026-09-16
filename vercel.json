@@ -1,0 +1,20 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "regions": ["iad1"],
+  "headers": [
+    {
+      "source": "/sitemap.xml",
+      "headers": [{ "key": "Content-Type", "value": "application/xml" }]
+    },
+    {
+      "source": "/robots.txt",
+      "headers": [{ "key": "Content-Type", "value": "text/plain" }]
+    }
+  ],
+  "functions": {
+    "app/api/extract/route.ts": { "maxDuration": 25 },
+    "app/api/download/route.ts": { "maxDuration": 60 },
+    "app/api/admin/*/route.ts": { "maxDuration": 10 }
+  }
+}
