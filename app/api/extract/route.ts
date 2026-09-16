@@ -8,15 +8,11 @@ export const dynamic = 'force-dynamic';
 /**
  * Real extraction pipeline (no fake/mock media — ever).
  *
- * Candidate backends (env vars win; Admin → API Config in-memory fallback):
- *  - EXTRACTOR_API_URL (+ EXTRACTOR_API_KEY): your own backend. Accepts the
- *    legacy `{ items: [...] }` shape, the Cobalt schema, or common
- *    downloader-API shapes (`links[]`, `data.links[]`, `medias[]`, `videoUrl`,
- *    ...). Works with RapidAPI hosts too: paste the full endpoint URL and put
- *    your RapidAPI key in EXTRACTOR_API_KEY (sent as `x-rapidapi-key` +
- *    `x-rapidapi-host` as well as `Authorization: Bearer`).
- *  - COBALT_API_URL (+ COBALT_API_KEY): your own self-hosted Cobalt API
- *    instance (`.../api/json`). Public api.cobalt.tools needs keys/permission.
+ * Cascade (first hit wins):
+ *  1. EXTRACTOR_API_URL (+ EXTRACTOR_API_KEY): your own backend (legacy items,
+ *     Cobalt schema, or common downloader-API shapes; RapidAPI-compatible).
+ *  2. COBALT_API_URL (+ COBALT_API_KEY): your own self-hosted Cobalt instance.
+ *  3. Built-in public fallback (BTCH_API_URL or default, no key needed).
  *
  *  POST is tried first (Cobalt/legacy style); if the response isn't
  *  recognized, a GET `?url=` fallback is tried (RapidAPI style).
@@ -59,6 +55,59 @@ function typeFromUrl(u: string): 'video' | 'image' {
 
 function qualityFromUrl(u: string): string {
   return typeFromUrl(u) === 'video' ? 'MP4 video' : 'HD image';
+}
+
+/**
+ * Refine media type for URLs without a file extension (e.g. CDN proxy links).
+ * 1. JWT payload decode (rapidcdn-style `?token=` links embed the real URL/filename).
+ * 2. HEAD request → Content-Type sniffing.
+ * 3. Fallback: extension guess.
+ */
+function decodeJwtPayload(token: string): any | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length < 2) return null;
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+async function probeType(u: string, ms = 9000): Promise<'video' | 'image'> {
+  const direct = typeFromUrl(u);
+  // Extensionless links default to image only when clearly an image host.
+  try {
+    const urlObj = new URL(u);
+    const token = urlObj.searchParams.get('token');
+    if (token) {
+      const payload = decodeJwtPayload(token);
+      const inner =
+        (payload && typeof payload.url === 'string' && payload.url) ||
+        (payload && typeof payload.filename === 'string' && payload.filename) ||
+        '';
+      if (inner) {
+        const e = extOf(inner);
+        if (['mp4', 'mov', 'm3u8', 'webm'].includes(e)) return 'video';
+        if (['jpg', 'jpeg', 'png', 'webp', 'heic', 'gif'].includes(e)) return 'image';
+      }
+    }
+  } catch {
+    /* fall through to HEAD */
+  }
+  if (extOf(u)) return direct;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), ms);
+    const r = await fetch(u, { method: 'HEAD', signal: ctrl.signal, redirect: 'follow' });
+    clearTimeout(t);
+    const ct = (r.headers.get('content-type') || '').toLowerCase();
+    if (ct.startsWith('video/')) return 'video';
+    if (ct.startsWith('image/')) return 'image';
+  } catch {
+    /* fall through */
+  }
+  return direct;
 }
 
 function rapidHeaders(endpoint: string, apiKey?: string): Record<string, string> {
@@ -186,7 +235,11 @@ function mapGeneric(j: any, igUrl: string, thumb: string): MediaItem[] | null {
   }
   if (typeof j !== 'object') return null;
   const pools: any[][] = [];
-  for (const path of ['links', 'medias', 'media', 'result', 'results', 'data.links', 'data.medias', 'data.result', 'data.results']) {
+  for (const path of [
+    'links', 'medias', 'media', 'result', 'results',
+    'data.links', 'data.medias', 'data.result', 'data.results',
+    'result.result', 'result.results'
+  ]) {
     const parts = path.split('.');
     let cur: any = j;
     for (const p of parts) cur = cur?.[p];
@@ -248,7 +301,7 @@ async function tryOEmbed(igUrl: string): Promise<{ author: string | null; thumb:
   return out;
 }
 
-function respond(j: any, url: string, meta: { author: string | null; thumb: string; title: string | null }) {
+async function respond(j: any, url: string, meta: { author: string | null; thumb: string; title: string | null }) {
   const legacy = mapLegacy(j);
   if (legacy) {
     return NextResponse.json({
@@ -261,6 +314,14 @@ function respond(j: any, url: string, meta: { author: string | null; thumb: stri
   }
   const items = mapCobalt(j, url, meta.thumb) || mapGeneric(j, url, meta.thumb);
   if (items && items.length > 0) {
+    // Refine extensionless URLs (CDN proxy links) via token/HEAD sniffing.
+    for (const it of items) {
+      if (!extOf(it.url)) {
+        it.type = await probeType(it.url);
+        it.quality = qualityFromUrl(it.url) === 'HD image' && it.type === 'video' ? 'MP4 video' : it.quality;
+        if (it.type === 'video' && /image/i.test(it.quality)) it.quality = 'MP4 video';
+      }
+    }
     return NextResponse.json({
       author: meta.author || 'instagram',
       caption: meta.title || url,
@@ -319,7 +380,7 @@ export async function POST(req: NextRequest) {
         { method: 'POST', headers, body: JSON.stringify({ url, videoQuality: '1080', filenameStyle: 'basic' }) }
       );
       if (r.ok && r.json) {
-        const hit = respond(r.json, url, meta);
+        const hit = await respond(r.json, url, meta);
         if (hit) return hit;
       }
       // Attempt 2: GET ?url= (RapidAPI style).
@@ -329,7 +390,7 @@ export async function POST(req: NextRequest) {
         headers: rapidHeaders(c.endpoint, c.key)
       });
       if (g.ok && g.json) {
-        const hit = respond(g.json, url, meta);
+        const hit = await respond(g.json, url, meta);
         if (hit) return hit;
         errors.push(`${c.endpoint} → unrecognized response shape`);
       } else {
@@ -340,14 +401,39 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Built-in public fallback (zero-config): free no-auth downloader API.
+  // Verified live 2026-09-16. Override with BTCH_API_URL, disable with
+  // DISABLE_BUILTIN_FALLBACK=1. Custom backends above always take priority.
+  if (process.env.DISABLE_BUILTIN_FALLBACK !== '1') {
+    const builtin =
+      process.env.BTCH_API_URL?.trim() ||
+      'https://btch-downloader-api-green.vercel.app/api/download/instagram';
+    for (const path of ['/api/download/instagram', '/api/download/aio']) {
+      const base = process.env.BTCH_API_URL?.trim() ? builtin : builtin.replace('/api/download/instagram', path);
+      try {
+        const g = await fetchJson(`${base}?url=${encodeURIComponent(url)}`, {
+          method: 'GET',
+          headers: { accept: 'application/json' }
+        }, 25000);
+        if (g.ok && g.json) {
+          const hit = await respond(g.json, url, meta);
+          if (hit) return hit;
+        }
+        errors.push(`builtin ${path} → HTTP ${g.status}`);
+      } catch (e: any) {
+        errors.push(`builtin ${path} → ${e.message || 'fetch failed'}`);
+      }
+    }
+  }
+
   // oEmbed alone gives metadata but no downloadable file — not enough for a result.
   // Honest failure: never return placeholder media as if it were real.
   return NextResponse.json(
     {
       error:
-        'Could not fetch this post. Connect an extractor backend (one-time, ~2 min): open Admin → API Config, ' +
-        'paste an extractor endpoint + key (e.g. a free RapidAPI Instagram-downloader key, or your own Cobalt instance), ' +
-        'press Save, then retry. For production, set EXTRACTOR_API_URL / EXTRACTOR_API_KEY as Vercel env vars.',
+        'Could not fetch this post right now. All extractor backends failed. ' +
+        'Fix options: open Admin → API Config and paste your own extractor endpoint + key, ' +
+        'or set EXTRACTOR_API_URL / EXTRACTOR_API_KEY as Vercel env vars.',
       details: errors.length > 0 ? errors : undefined
     },
     { status: 502 }
